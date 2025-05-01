@@ -8,6 +8,7 @@ import sqlite3
 import numpy as np
 import cv2
 import os
+import hashlib
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'  # Needed for both flash messages and sessions
@@ -34,6 +35,12 @@ RESNET_FOLDER = 'static/resnet_results'
 for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER, YOLO_FOLDER, RESNET_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder)
+
+def compute_image_hash(file):
+    file.seek(0)
+    hash_val = hashlib.sha256(file.read()).hexdigest()
+    file.seek(0)
+    return hash_val
 
 # Helper function to process the image
 def process_image(file):
@@ -163,22 +170,37 @@ def predict():
             return redirect(request.url)
 
         try:
-            img, original_filename, uploaded_path, processed_img_path, img_array = process_image(file)
+            img_hash = compute_image_hash(file)
 
-            # Insert into images table
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO images (user_id, original_image_filename, preprocessed_image_filename) VALUES (?, ?, ?)',
-                (session['user_id'], original_filename, os.path.basename(processed_img_path))
-            )
-            conn.commit()
-            image_id = cursor.lastrowid  # Get the inserted image ID
+
+            # Check for existing image by hash
+            cursor.execute('SELECT id, original_image_filename, preprocessed_image_filename FROM images WHERE image_hash = ?', (img_hash,))
+            existing_image = cursor.fetchone()
+
+            if existing_image:
+                image_id = existing_image['id']
+                original_filename = existing_image['original_image_filename']
+                processed_img_path = os.path.join(PROCESSED_FOLDER, existing_image['preprocessed_image_filename'])
+
+                # You may still need to preprocess to get the img_array (if not cached/stored)
+                img, _, _, _, img_array = process_image(file)
+            else:
+                # Process new image
+                img, original_filename, uploaded_path, processed_img_path, img_array = process_image(file)
+
+                cursor.execute(
+                    'INSERT INTO images (user_id, original_image_filename, preprocessed_image_filename, image_hash) VALUES (?, ?, ?, ?)',
+                    (session['user_id'], original_filename, os.path.basename(processed_img_path), img_hash)
+                )
+                conn.commit()
+                image_id = cursor.lastrowid
 
             # Predict using ResNet
             resnet_class_label, resnet_probability = predict_resnet(img_array)
 
-            # Insert ResNet prediction into predictions table
+            # Insert ResNet prediction
             cursor.execute(
                 'INSERT INTO predictions (image_id, model_name, prediction_label, confidence_score) VALUES (?, ?, ?, ?)',
                 (image_id, 'ResNet-50V2', resnet_class_label, resnet_probability)
@@ -191,7 +213,7 @@ def predict():
             yolo_img_path = os.path.join(YOLO_FOLDER, yolo_img_filename)
             cv2.imwrite(yolo_img_path, annotated_img)
 
-            # Optional: Insert YOLO result into predictions table (if you want YOLO results too)
+            # Insert YOLO result
             cursor.execute(
                 'INSERT INTO predictions (image_id, model_name, prediction_label, confidence_score) VALUES (?, ?, ?, ?)',
                 (image_id, 'YOLOv11', 'Object Detection Completed', 1.0)
@@ -217,6 +239,7 @@ def predict():
             return redirect(request.url)
 
     return render_template('predict.html', resnet_result=None, yolo_filename=None, resnet_filename=None)
+
 
 if __name__ == '__main__':
     app.run(debug=True)

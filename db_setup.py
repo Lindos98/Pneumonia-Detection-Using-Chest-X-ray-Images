@@ -26,6 +26,7 @@ def create_database():
         original_image_filename TEXT NOT NULL,
         preprocessed_image_filename TEXT,
         upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        image_hash TEXT UNIQUE,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
     ''')
